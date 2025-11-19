@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 
 usage() {
-  echo "Usage: $0 <TARGET> <LOCAL_REPO_PATH> <TARBALL_NAME>"
+  echo "Usage: $0 <TARGET> <LOCAL_REPO_PATH> <TARBALL_NAME> [REMOTE_PATH]"
   echo ""
   echo "Arguments:"
   echo "  TARGET   Name of the GitHub Codespace (e.g., 'nice-space-name')"
@@ -18,15 +18,15 @@ if [[ "$1" == "--help" || "$1" == "-h" ]]; then
   usage
 fi
 
-if [ $# -ne 3 ]; then
-  echo "❌ Error: Missing arguments."
+if [ $# -lt 3 ] || [ $# -gt 4 ]; then
+  echo "❌ Error: Invalid number of arguments."
   usage
 fi
 
 TARGET="$1"
 LOCAL_REPO_PATH="$2"
 TARBALL="$3"
-REMOTE_PATH="/workspaces"
+REMOTE_PATH="${4:-}"
 
 # echo "CODESPACE_NAME - $CODESPACE_NAME"
 echo "TARGET - $TARGET"
@@ -53,27 +53,26 @@ echo "✅ No modified or untracked files to upload."
 exit 0
 fi
 
-echo "$FILES" | tar --exclude=".gitignore" --exclude="package-lock.json" -czf "$TARBALL" -T -
+echo "$FILES" | tar --exclude=".gitignore" --exclude="package-lock.json" --exclude="pnpm-lock.yaml" -czf "$TARBALL" -T -
 
 if [[ "$TARGET" == *"-"* && ! "$TARGET" =~ @ ]]; then
   echo "📤 Uploading tarball to Codespace..."
+  REMOTE_PATH="${REMOTE_PATH:-/workspaces}"
   gh codespace cp "$TARBALL" remote:$REMOTE_PATH/ -c "$TARGET"
   
   echo "📂 Extracting in Codespace..."
   gh codespace ssh -c "$TARGET" -- "
-  	echo $(basename $LOCAL_REPO_PATH) > /workspaces/ok.txt &&
   	cd $REMOTE_PATH/$(basename $LOCAL_REPO_PATH) &&
 	git checkout . &&
 	{ [ -f \"../$(basename $LOCAL_REPO_PATH)-gitignore\" ] && {
 		\"echo gitignore exists\" cp .gitignore .gitignore.old && cp gitignore .gitignore; 
 	}; } || true &&
-	rm /workspaces/ok.txt &&
 	tar --touch -xzf $REMOTE_PATH/$TARBALL -C $REMOTE_PATH/$(basename $LOCAL_REPO_PATH) &&
 	rm $REMOTE_PATH/$TARBALL
   "
 else
   echo "🌐 Detected normal SSH host: $TARGET"
-  REMOTE_PATH="/root"
+  REMOTE_PATH="${REMOTE_PATH:-~}"
   scp "$TARBALL" "$TARGET:$REMOTE_PATH/"
   ssh "$TARGET" "
     cd $REMOTE_PATH/$(basename $LOCAL_REPO_PATH) &&
