@@ -9,6 +9,7 @@ const port = process.env.EMAIL_PORT;
 const user = process.env.EMAIL_USERNAME;
 const pass = process.env.EMAIL_PASSWORD;
 console.log("Host:", host, port, user, pass ? "****" : "nope");
+const relayPort = parseInt(process.env.RELAY_PORT, 10) || 4001;
 
 const gmailTransport = nodemailer.createTransport({
   host,
@@ -52,7 +53,7 @@ const server = new SMTPServer({
   },
 });
 
-server.listen(4000, "0.0.0.0", () => {
-  console.log("Relay server running on port 4000");
+server.listen(relayPort, "0.0.0.0", () => {
+  console.log("Relay server running on port", relayPort);
 });
 
