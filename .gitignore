@@ -5,3 +5,5 @@ todo.md
 lazy.txt
 
 .env
+
+node_modules/
