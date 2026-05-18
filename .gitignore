@@ -1,9 +1,4 @@
-# Personal notes and todos
-note.md
-todo.md
-
-lazy.txt
-
 .env
-
+lazy.txt
 node_modules/
+.pytest_cache/
