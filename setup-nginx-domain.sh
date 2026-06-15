@@ -33,6 +33,16 @@ fi
 SITES_AVAILABLE="/etc/nginx/sites-available/${DOMAIN}"
 SITES_ENABLED="/etc/nginx/sites-enabled/${DOMAIN}"
 
+SERVER_IP=$(curl -s -4 https://ifconfig.me || curl -s -4 https://api.ipify.org)
+
+echo "🌐 This machine's public IP appears to be: ${SERVER_IP}"
+echo "   Please ensure the DNS A record for ${DOMAIN} points to ${SERVER_IP}."
+read -rp "Has the DNS A record been set and propagated? [y/N] " dns_confirm
+if [[ ! "$dns_confirm" =~ ^[Yy]$ ]]; then
+  echo "Aborted. Set the DNS A record and re-run this script."
+  exit 1
+fi
+
 echo "📦 Installing nginx and certbot (if not already installed)..."
 apt-get update -y
 apt-get install -y nginx certbot python3-certbot-nginx
