@@ -6,12 +6,12 @@ set -euo pipefail
 #   ./insert-workspace-name.sh 6 inbox
 #
 # What it does:
-#   - leaves dynamic workspaces enabled
+#   - assumes static workspaces (org.gnome.desktop.wm.preferences num-workspaces)
 #   - inserts a new NAME at position N
 #   - renumbers all later named workspaces
 #   - stores names in the GNOME workspace-names key as "N-suffix"
+#   - increases num-workspaces by 1 so the inserted workspace actually exists
 #   - does NOT move any windows
-#   - does NOT guarantee an empty workspace will remain at N while dynamic workspaces are on
 
 POS="${1:?Give the insert position, e.g. 6}"
 LABEL="${2:-}"
@@ -88,7 +88,16 @@ renumbered = [f"{i}-{suffix}" if suffix else f"{i}-" for i, suffix in enumerate(
 
 gset("org.gnome.desktop.wm.preferences", "workspace-names", repr(renumbered))
 
+# Static workspaces: bump the total count by 1 so the newly inserted
+# workspace actually exists instead of just being a name with nothing
+# behind it. Also make sure we never end up with fewer workspaces than
+# named entries.
+current_total = int(gget("org.gnome.desktop.wm.preferences", "num-workspaces"))
+new_total = max(current_total + 1, len(renumbered))
+gset("org.gnome.desktop.wm.preferences", "num-workspaces", str(new_total))
+
 print("Updated workspace names:")
 for n in renumbered:
     print(" ", n)
+print(f"num-workspaces: {current_total} -> {new_total}")
 PY

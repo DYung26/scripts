@@ -6,13 +6,12 @@ set -euo pipefail
 #   ./gnome-delete-workspace.sh 6
 #
 # What it does:
-#   - leaves dynamic workspaces enabled
+#   - assumes static workspaces (org.gnome.desktop.wm.preferences num-workspaces)
 #   - deletes the NAME at position N
 #   - renumbers remaining named workspaces (shifts down)
 #   - stores names in the GNOME workspace-names key as "N-suffix"
+#   - decreases num-workspaces by 1 so the removed workspace actually goes away
 #   - does NOT move any windows
-#   - with dynamic workspaces on, GNOME may add/remove trailing empty workspaces automatically
-#   - does NOT guarantee an empty workspace will remain at N while dynamic workspaces are on
 #
 # Renumbering examples:
 #   - before: ["1-dev", "2-mail", "3-chat"], delete N=2
@@ -101,7 +100,15 @@ else:
     gset("org.gnome.desktop.wm.preferences", "workspace-names", repr([]))
     renumbered = []
 
+# Static workspaces: shrink the total count by 1 so the deleted workspace
+# actually disappears instead of just losing its name. Never go below 1
+# and never drop below the number of named workspaces still in use.
+current_total = int(gget("org.gnome.desktop.wm.preferences", "num-workspaces"))
+new_total = max(current_total - 1, len(renumbered), 1)
+gset("org.gnome.desktop.wm.preferences", "num-workspaces", str(new_total))
+
 print("Updated workspace names:")
 for n in renumbered:
     print(" ", n)
+print(f"num-workspaces: {current_total} -> {new_total}")
 PY

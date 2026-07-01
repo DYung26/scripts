@@ -1,12 +1,24 @@
 #!/bin/bash
 
 usage() {
-    echo "Usage: $0 <file1> [file2 ...] [-m <commit_message_file>] [--per-line]"
+    echo "Usage: $0 <file1> [file2 ...] [-m <commit_message_file>] [--per-line] [--date <date>]"
     echo ""
     echo "  -m, --message-file   Path to a file containing commit message(s)"
     echo "  --per-line            Each file gets a separate commit from each line in the message file"
+    echo "  --date <date>         Override the commit date (passed to git commit --date). Falls"
+    echo "                        back to COMMIT_DATE from .env if not given; omitted entirely if"
+    echo "                        neither is set."
     exit 1
 }
+
+# Load defaults (e.g. COMMIT_DATE) from a .env next to this script, if present.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/.env"
+    set +a
+fi
 
 if [ $# -lt 1 ]; then
     usage
@@ -25,6 +37,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --per-line)
             per_line=true
+            ;;
+        --date)
+            shift
+            COMMIT_DATE="$1"
             ;;
         -*)
             echo "Unknown option: $1"
@@ -71,7 +87,11 @@ if [ -n "$message_file" ]; then
             msg="${messages[$i]}"
             file="${files_to_add[$i]}"
             echo "Committing $file with message: $msg"
-            git commit "$file" -m "$msg"
+            if [ -n "${COMMIT_DATE:-}" ]; then
+                git commit "$file" -m "$msg" --date="$COMMIT_DATE"
+            else
+                git commit "$file" -m "$msg"
+            fi
         done
         exit 0
     else
@@ -92,6 +112,10 @@ echo "$commit_msg"
 echo "-------------------------"
 
 echo "Committing all files with one message"
-# git commit --date='2026-03-17 23:12:00' -m "$commit_msg"
-git commit -m "$commit_msg"
+if [ -n "${COMMIT_DATE:-}" ]; then
+    echo "Using commit date: $COMMIT_DATE"
+    git commit -m "$commit_msg" --date="$COMMIT_DATE"
+else
+    git commit -m "$commit_msg"
+fi
 # git push
