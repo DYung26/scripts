@@ -40,6 +40,16 @@ while [[ $# -gt 0 ]]; do
             ;;
         --date)
             shift
+            if [ -z "${1:-}" ] || [[ "$1" == -* ]]; then
+                echo "Error: --date requires a value."
+                echo "Expected format: \"YYYY-MM-DD HH:MM:SS\" (e.g. \"2026-06-29 23:17:00\")"
+                exit 1
+            fi
+            if ! [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]][0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]; then
+                echo "Error: Invalid --date format: '$1'"
+                echo "Expected format: \"YYYY-MM-DD HH:MM:SS\" (e.g. \"2026-06-29 23:17:00\")"
+                exit 1
+            fi
             COMMIT_DATE="$1"
             ;;
         -*)
