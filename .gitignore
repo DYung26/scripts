@@ -2,3 +2,4 @@
 lazy.txt
 node_modules/
 .pytest_cache/
+out/
