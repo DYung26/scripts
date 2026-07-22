@@ -1,9 +1,10 @@
 #!/bin/bash
 
 usage() {
-    echo "Usage: $0 <file1> [file2 ...] [-m <commit_message_file>] [--per-line] [--date <date>]"
+    echo "Usage: $0 <file1> [file2 ...] [-m <commit_message_file>] [--msg <message>] [--per-line] [--date <date>]"
     echo ""
     echo "  -m, --message-file   Path to a file containing commit message(s)"
+    echo "  --msg <message>       Inline single-line commit message (skips interactive prompt)"
     echo "  --per-line            Each file gets a separate commit from each line in the message file"
     echo "  --date <date>         Override the commit date (passed to git commit --date). Falls"
     echo "                        back to COMMIT_DATE from .env if not given; omitted entirely if"
@@ -28,12 +29,18 @@ files_to_add=()
 message_file=""
 per_line=false
 commit_msg=""
+msg_set=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -m|--message-file)
             shift
             message_file="$1"
+            ;;
+        --msg)
+            shift
+            commit_msg="$1"
+            msg_set=true
             ;;
         --per-line)
             per_line=true
@@ -107,6 +114,8 @@ if [ -n "$message_file" ]; then
     else
     	commit_msg=$(<"$message_file")
     fi
+elif $msg_set; then
+    : # commit_msg already set via --msg
 else
     echo "Enter multiline commit message (type 'END' on a new line to finish):"
     while IFS= read -e -r line && [ "$line" != "END" ]; do
