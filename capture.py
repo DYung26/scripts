@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Scroll through a tab, expand collapsed content as it mounts, and stitch
 per-viewport screenshots into a single full-page image (or, with --pdf,
-per-scroll-step PDF pages into a single multi-page PDF).
+per-scroll-step PDF pages into a single multi-page PDF; or, with --text,
+the page's extracted text instead of any image/PDF output).
 
 Two ways to get a page to capture:
 
@@ -157,6 +158,46 @@ SHOW_TOP_OVERLAYS_JS = """
     delete el.dataset.fpscHiddenTop;
   });
   return els.length;
+}
+"""
+
+EXTRACT_VIEWPORT_TEXT_JS = """
+() => {
+  const root = document.querySelector('[data-fpsc-scroll-target="true"]') || document.body;
+  const rootRect = root.getBoundingClientRect();
+  const top = root === document.body ? 0 : rootRect.top;
+  const bottom = root === document.body ? window.innerHeight : rootRect.bottom;
+
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+      const parent = node.parentElement;
+      if (!parent) return NodeFilter.FILTER_REJECT;
+      const style = getComputedStyle(parent);
+      if (style.display === 'none' || style.visibility === 'hidden') return NodeFilter.FILTER_REJECT;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const rect = range.getBoundingClientRect();
+      if (rect.bottom < top || rect.top > bottom) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+
+  const lines = [];
+  let currentParent = null;
+  let currentLine = '';
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    const parent = node.parentElement;
+    if (parent !== currentParent) {
+      if (currentLine) lines.push(currentLine);
+      currentLine = '';
+      currentParent = parent;
+    }
+    currentLine += node.nodeValue;
+  }
+  if (currentLine) lines.push(currentLine);
+  return lines.join('\\n');
 }
 """
 
@@ -331,6 +372,35 @@ def stitch(shots: list[tuple[int, bytes]], out_dir: Path, expected_overlap: int,
     return out_paths
 
 
+def merge_text_snapshots(snapshots: list[str], max_overlap_lines: int = 40) -> str:
+    """Concatenate per-scroll-step viewport text, trimming the duplicate lines each
+    consecutive pair shares from deliberately overlapping scroll positions.
+
+    Mirrors stitch()'s approach for images: search backward from the end of the
+    previous snapshot's lines for the longest run that exactly matches the start
+    of the next snapshot's lines, and drop that many duplicate lines from the
+    next snapshot before appending it. Unlike stitch(), there's no expected
+    overlap to search near - scroll distance in pixels doesn't map to a known
+    number of text lines - so this scans every candidate overlap length down
+    from the cap instead of searching outward from an estimate.
+    """
+    if not snapshots:
+        return ""
+
+    merged_lines = snapshots[0].split("\n")
+    for snapshot in snapshots[1:]:
+        next_lines = snapshot.split("\n")
+        cap = min(max_overlap_lines, len(merged_lines), len(next_lines))
+        overlap = 0
+        for candidate in range(cap, 0, -1):
+            if merged_lines[-candidate:] == next_lines[:candidate]:
+                overlap = candidate
+                break
+        merged_lines.extend(next_lines[overlap:])
+
+    return "\n".join(merged_lines)
+
+
 async def print_page_to_pdf(page: Page) -> bytes:
     """Print the page's current DOM state to a PDF, headless-first with a CDP fallback.
 
@@ -477,8 +547,23 @@ async def capture(
     scroll_overlap_px: int = 150,
     pdf: bool = False,
     max_pdf_pages: int = 90,
+    expand_only: bool = False,
+    skip_expand: bool = False,
+    text: bool = False,
 ) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Neither expand_only nor text mode needs the fuller settle a screenshot
+    # needs to render cleanly - they only need to know the DOM stopped growing
+    # before moving on - so both can scroll through much faster. This matters
+    # for text mode especially: reading whatever's on screen as soon as each
+    # viewport is reachable beats reading it late, since already-expanded
+    # content elsewhere on the page can idle back collapsed while a slower
+    # pass is still working its way down.
+    use_fast_settle = expand_only or text
+    loop_settle_ms = 0 if use_fast_settle else settle_ms
+    loop_settle_checks = 1 if use_fast_settle else settle_checks
+    loop_settle_interval_ms = 50 if use_fast_settle else settle_interval_ms
 
     device_pixel_ratio = await page.evaluate("() => window.devicePixelRatio")
     expected_overlap_px = round(scroll_overlap_px * device_pixel_ratio)
@@ -490,6 +575,7 @@ async def capture(
 
     shots: list[tuple[int, bytes]] = []
     pdf_step_paths: list[Path] = []
+    text_snapshots: list[str] = []
     last_scroll_y = -1
     is_first = True
     warned_no_bottom_overlay = False
@@ -497,41 +583,48 @@ async def capture(
     step = 0
 
     while True:
-        await expand_current_viewport(page, settle_ms)
-        info = await wait_for_height_settle(page, settle_checks, settle_interval_ms)
+        if not skip_expand:
+            await expand_current_viewport(page, loop_settle_ms)
+        info = await wait_for_height_settle(page, loop_settle_checks, loop_settle_interval_ms)
 
         at_bottom = info["scrollY"] + info["viewportHeight"] >= info["scrollHeight"] - 1
 
-        # The bottom overlay (e.g. a chat composer) only belongs in the shot that
-        # actually shows the bottom of the page; hide it everywhere else.
-        if hide_bottom_overlays:
-            if at_bottom:
-                await page.evaluate(SHOW_BOTTOM_OVERLAYS_JS)
-            else:
-                hidden_count = await page.evaluate(HIDE_BOTTOM_OVERLAYS_JS)
-                if hidden_count == 0 and not warned_no_bottom_overlay:
-                    print("Warning: --keep-bottom-overlays is off but no matching overlay was found to hide.")
-                    warned_no_bottom_overlay = True
+        if text:
+            snapshot = await page.evaluate(EXTRACT_VIEWPORT_TEXT_JS)
+            if snapshot.strip():
+                text_snapshots.append(snapshot)
 
-        # Mirror that for the top overlay (e.g. a header), which only belongs in
-        # the shot that actually shows the top of the page.
-        if hide_top_overlays:
-            if is_first:
-                await page.evaluate(SHOW_TOP_OVERLAYS_JS)
-            else:
-                hidden_count = await page.evaluate(HIDE_TOP_OVERLAYS_JS)
-                if hidden_count == 0 and not warned_no_top_overlay:
-                    print("Warning: --keep-top-overlays is off but no matching overlay was found to hide.")
-                    warned_no_top_overlay = True
+        if not expand_only and not text:
+            # The bottom overlay (e.g. a chat composer) only belongs in the shot that
+            # actually shows the bottom of the page; hide it everywhere else.
+            if hide_bottom_overlays:
+                if at_bottom:
+                    await page.evaluate(SHOW_BOTTOM_OVERLAYS_JS)
+                else:
+                    hidden_count = await page.evaluate(HIDE_BOTTOM_OVERLAYS_JS)
+                    if hidden_count == 0 and not warned_no_bottom_overlay:
+                        print("Warning: --keep-bottom-overlays is off but no matching overlay was found to hide.")
+                        warned_no_bottom_overlay = True
 
-        if pdf:
-            pdf_bytes = await print_page_to_pdf(page)
-            step_path = output_dir / f"page_{step:03d}.pdf"
-            step_path.write_bytes(pdf_bytes)
-            pdf_step_paths.append(step_path)
-        else:
-            png = await page.screenshot()
-            shots.append((info["scrollY"], png))
+            # Mirror that for the top overlay (e.g. a header), which only belongs in
+            # the shot that actually shows the top of the page.
+            if hide_top_overlays:
+                if is_first:
+                    await page.evaluate(SHOW_TOP_OVERLAYS_JS)
+                else:
+                    hidden_count = await page.evaluate(HIDE_TOP_OVERLAYS_JS)
+                    if hidden_count == 0 and not warned_no_top_overlay:
+                        print("Warning: --keep-top-overlays is off but no matching overlay was found to hide.")
+                        warned_no_top_overlay = True
+
+            if pdf:
+                pdf_bytes = await print_page_to_pdf(page)
+                step_path = output_dir / f"page_{step:03d}.pdf"
+                step_path.write_bytes(pdf_bytes)
+                pdf_step_paths.append(step_path)
+            else:
+                png = await page.screenshot()
+                shots.append((info["scrollY"], png))
 
         if at_bottom or info["scrollY"] == last_scroll_y:
             break
@@ -541,7 +634,15 @@ async def capture(
 
         next_y = info["scrollY"] + info["viewportHeight"] - scroll_overlap_px
         await page.evaluate(SCROLL_TO_JS, next_y)
-        await page.wait_for_timeout(settle_ms)
+        await page.wait_for_timeout(loop_settle_ms)
+
+    if expand_only:
+        return []
+
+    if text:
+        out_path = output_dir / "page.txt"
+        out_path.write_text(merge_text_snapshots(text_snapshots))
+        return [out_path]
 
     if pdf:
         return merge_pdfs(pdf_step_paths, output_dir, max_pdf_pages)
@@ -593,6 +694,9 @@ async def run(args: argparse.Namespace) -> list[Path]:
             scroll_overlap_px=args.scroll_overlap,
             pdf=args.pdf,
             max_pdf_pages=args.max_pdf_pages,
+            expand_only=args.expand_only,
+            skip_expand=args.skip_expand,
+            text=args.text,
         )
 
         if not args.no_prompt:
@@ -659,6 +763,22 @@ def parse_args() -> argparse.Namespace:
         help="print each scroll step to a PDF page and merge them, instead of stitching screenshots into a PNG",
     )
     parser.add_argument(
+        "--text",
+        action="store_true",
+        help="extract the page's text instead of capturing screenshots or PDF pages, reading whatever is visible in the viewport at each scroll step and stitching the results together, the same way screenshots are captured",
+    )
+    expand_group = parser.add_mutually_exclusive_group()
+    expand_group.add_argument(
+        "--expand-only",
+        action="store_true",
+        help="scroll through the page expanding collapsible content, but skip taking screenshots or PDF pages",
+    )
+    expand_group.add_argument(
+        "--skip-expand",
+        action="store_true",
+        help="skip expanding collapsible content and go straight to capturing screenshots or PDF pages",
+    )
+    parser.add_argument(
         "--headless",
         action="store_true",
         help="launch the browser headless (launch mode only) - the reliable path for --pdf, since Chrome's print-to-PDF is unreliable in a headful window",
@@ -684,6 +804,10 @@ def parse_args() -> argparse.Namespace:
         parser.error("--url is required when --launch is set")
     if not args.launch and not args.url_match:
         parser.error("--url-match is required when attaching to an existing browser")
+    if args.pdf and args.text:
+        parser.error("--pdf and --text are mutually exclusive")
+    if args.text and args.expand_only:
+        parser.error("--text and --expand-only are mutually exclusive")
 
     return args
 
@@ -691,7 +815,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     results = asyncio.run(run(args))
-    if len(results) == 1:
+    if not results:
+        print("Expansion complete.")
+    elif results[0].suffix == ".txt":
+        print(f"Text: {results[0]}")
+    elif len(results) == 1:
         print(f"Stitched screenshot: {results[0]}" if not results[0].suffix == ".pdf" else f"PDF: {results[0]}")
     else:
         label = "Stitched screenshot" if results[0].suffix != ".pdf" else "PDF"
