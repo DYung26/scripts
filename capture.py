@@ -550,6 +550,7 @@ async def capture(
     expand_only: bool = False,
     skip_expand: bool = False,
     text: bool = False,
+    start_position: bool = False,
 ) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -570,7 +571,12 @@ async def capture(
 
     await wait_for_height_settle(page, settle_checks, settle_interval_ms)
     await page.evaluate(FIND_SCROLL_CONTAINER_JS)
-    await page.evaluate(SCROLL_TO_JS, 0)
+    if start_position:
+        await asyncio.to_thread(
+            input, "Scroll/position the page where capture should start, then press Enter..."
+        )
+    else:
+        await page.evaluate(SCROLL_TO_JS, 0)
     await wait_for_height_settle(page, settle_checks, settle_interval_ms)
 
     shots: list[tuple[int, bytes]] = []
@@ -697,6 +703,7 @@ async def run(args: argparse.Namespace) -> list[Path]:
             expand_only=args.expand_only,
             skip_expand=args.skip_expand,
             text=args.text,
+            start_position=args.start_position,
         )
 
         if not args.no_prompt:
@@ -788,6 +795,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=90,
         help="roll over into a new merged_NNN.pdf whenever the next step's pages would push the current file past this many pages",
+    )
+    parser.add_argument(
+        "--start-position",
+        action="store_true",
+        help="skip the initial scroll-to-top and instead wait for you to position the page yourself, then press Enter to begin capturing from there",
     )
     parser.add_argument(
         "--no-prompt",
